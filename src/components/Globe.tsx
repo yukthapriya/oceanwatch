@@ -23,6 +23,13 @@ const shipColors: Record<Ship['type'], string> = {
   Passenger: '#AA44FF',
 };
 
+const TRAIL_LENGTH = 8;
+// Piracy zone pulse animation constants
+const PIRACY_MIN_ALPHA = 0.08;
+const PIRACY_ALPHA_RANGE = 0.27;
+const PIRACY_PULSE_PERIOD_MS = 900;
+const PIRACY_OUTLINE_MIN_ALPHA = 0.5;
+
 export default function Globe({
   ships,
   cables,
@@ -37,6 +44,8 @@ export default function Globe({
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
   const entitiesRef = useRef<Map<string, unknown>>(new Map());
+  // Recent positions per ship for the wake/trail effect: Map<shipId, [lon, lat][]>
+  const shipTrailsRef = useRef<Map<string, [number, number][]>>(new Map());
 
   const initCesium = useCallback(async () => {
     if (!containerRef.current || viewerRef.current) return;
@@ -134,54 +143,111 @@ export default function Globe({
     };
   }, [initCesium]);
 
-  // Update ship entities
+  // Update ship entities — update positions in-place for smooth animation, add wake trails
   useEffect(() => {
     const viewer = viewerRef.current as { entities: { remove: (e: unknown) => void; add: (e: unknown) => unknown } } | null;
     if (!viewer) return;
 
-    Array.from(entitiesRef.current.entries()).forEach(([key, entity]) => {
-      if (key.startsWith('ship-')) {
-        viewer.entities.remove(entity);
-        entitiesRef.current.delete(key);
-      }
-    });
+    if (!visibility.ships) {
+      Array.from(entitiesRef.current.entries()).forEach(([key, entity]) => {
+        if (key.startsWith('ship-') || key.startsWith('trail-')) {
+          viewer.entities.remove(entity);
+          entitiesRef.current.delete(key);
+        }
+      });
+      return;
+    }
 
-    if (!visibility.ships) return;
-
-    const addShips = async () => {
+    const updateShips = async () => {
       try {
         const Cesium = await import('cesium');
+        const shipIds = new Set(ships.map(s => s.id));
+
+        // Remove entities for ships no longer present
+        Array.from(entitiesRef.current.entries()).forEach(([key, entity]) => {
+          if (!key.startsWith('ship-') && !key.startsWith('trail-')) return;
+          const id = key.replace(/^(?:ship|trail)-/, '');
+          if (!shipIds.has(id)) {
+            viewer.entities.remove(entity);
+            entitiesRef.current.delete(key);
+          }
+        });
+
         ships.forEach(ship => {
           const color = Cesium.Color.fromCssColorString(shipColors[ship.type]);
-          const entity = viewer.entities.add({
-            position: Cesium.Cartesian3.fromDegrees(ship.lon, ship.lat),
-            point: {
-              pixelSize: 8,
-              color: color,
-              outlineColor: Cesium.Color.WHITE,
-              outlineWidth: 1,
-              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-            },
-            label: {
-              text: ship.name,
-              font: '10px sans-serif',
-              fillColor: Cesium.Color.WHITE,
-              outlineColor: Cesium.Color.BLACK,
-              outlineWidth: 2,
-              style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-              verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-              pixelOffset: new Cesium.Cartesian2(0, -12),
-              show: false,
-            },
-          });
-          (entity as { _shipData?: Ship })._shipData = ship;
-          entitiesRef.current.set(`ship-${ship.id}`, entity);
+          const position = Cesium.Cartesian3.fromDegrees(ship.lon, ship.lat);
+          const existingEntity = entitiesRef.current.get(`ship-${ship.id}`);
+
+          if (existingEntity) {
+            // Update position and ship data reference in-place
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (existingEntity as any).position = position;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (existingEntity as any)._shipData = ship;
+          } else {
+            // Create new ship entity
+            const entity = viewer.entities.add({
+              position,
+              point: {
+                pixelSize: 8,
+                color: color,
+                outlineColor: Cesium.Color.WHITE,
+                outlineWidth: 1,
+                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+              },
+              label: {
+                text: ship.name,
+                font: '10px sans-serif',
+                fillColor: Cesium.Color.WHITE,
+                outlineColor: Cesium.Color.BLACK,
+                outlineWidth: 2,
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                pixelOffset: new Cesium.Cartesian2(0, -12),
+                show: false,
+              },
+            });
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (entity as any)._shipData = ship;
+            entitiesRef.current.set(`ship-${ship.id}`, entity);
+          }
+
+          // Update wake/trail for this ship
+          const trail = shipTrailsRef.current.get(ship.id) ?? [];
+          trail.unshift([ship.lon, ship.lat]);
+          if (trail.length > TRAIL_LENGTH) trail.splice(TRAIL_LENGTH);
+          shipTrailsRef.current.set(ship.id, trail);
+
+          if (trail.length >= 2) {
+            const trailPositions = trail.map(([lon, lat]) =>
+              Cesium.Cartesian3.fromDegrees(lon, lat)
+            );
+            const existingTrail = entitiesRef.current.get(`trail-${ship.id}`);
+            if (existingTrail) {
+              // Update trail positions in-place
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (existingTrail as any).polyline.positions = trailPositions;
+            } else {
+              const trailEntity = viewer.entities.add({
+                polyline: {
+                  positions: trailPositions,
+                  width: 1.5,
+                  material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.1,
+                    color: color.withAlpha(0.45),
+                  }),
+                },
+              });
+              entitiesRef.current.set(`trail-${ship.id}`, trailEntity);
+            }
+          }
         });
       } catch (e) {
-        console.error('Failed to add ships:', e);
+        console.error('Failed to update ships:', e);
       }
     };
-    addShips();
+
+    updateShips();
   }, [ships, visibility.ships]);
 
   // Update cable entities
@@ -226,7 +292,7 @@ export default function Globe({
     addCables();
   }, [cables, visibility.cables]);
 
-  // Update piracy zones
+  // Update piracy zones with pulse/breathing animation via CallbackProperty
   useEffect(() => {
     const viewer = viewerRef.current as { entities: { remove: (e: unknown) => void; add: (e: unknown) => unknown } } | null;
     if (!viewer) return;
@@ -244,20 +310,38 @@ export default function Globe({
       try {
         const Cesium = await import('cesium');
         piracyZones.forEach(zone => {
-          const color = zone.risk_level === 'high'
+          const baseColor = zone.risk_level === 'high'
             ? Cesium.Color.RED
             : zone.risk_level === 'medium'
             ? Cesium.Color.ORANGE
             : Cesium.Color.YELLOW;
+
+          // Pulsing fill: alpha breathes between 0.08 and 0.35
+          const fillMaterial = new Cesium.ColorMaterialProperty(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            new (Cesium as any).CallbackProperty(() => {
+              const alpha = PIRACY_MIN_ALPHA + PIRACY_ALPHA_RANGE * Math.abs(Math.sin(Date.now() / PIRACY_PULSE_PERIOD_MS));
+              return baseColor.withAlpha(alpha);
+            }, false)
+          );
+
+          // Pulsing outline: alpha breathes between PIRACY_OUTLINE_MIN_ALPHA and 1.0
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const outlineColorProp = new (Cesium as any).CallbackProperty(() => {
+            const alpha = PIRACY_OUTLINE_MIN_ALPHA + (1 - PIRACY_OUTLINE_MIN_ALPHA) * Math.abs(Math.sin(Date.now() / PIRACY_PULSE_PERIOD_MS));
+            return baseColor.withAlpha(alpha);
+          }, false);
 
           const entity = viewer.entities.add({
             position: Cesium.Cartesian3.fromDegrees(zone.lon, zone.lat),
             ellipse: {
               semiMajorAxis: zone.radius * 1000,
               semiMinorAxis: zone.radius * 1000,
-              material: color.withAlpha(0.2),
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              material: fillMaterial as any,
               outline: true,
-              outlineColor: color.withAlpha(0.8),
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              outlineColor: outlineColorProp as any,
               outlineWidth: 2,
               heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
             },

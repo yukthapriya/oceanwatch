@@ -2,9 +2,10 @@
 
 import dynamic from 'next/dynamic';
 import { useState, useEffect } from 'react';
-import { Ship, SubmarineCable, PiracyZone, ProtectedArea, OceanTemperaturePoint, WeatherBuoy } from '@/types';
+import { SubmarineCable, PiracyZone, ProtectedArea, OceanTemperaturePoint, WeatherBuoy, Ship } from '@/types';
 import { useLayerVisibility } from '@/hooks/useLayerVisibility';
 import { useVisualMode } from '@/hooks/useVisualMode';
+import { useShipData } from '@/hooks/useShipData';
 import TopBar from '@/components/TopBar';
 import Sidebar from '@/components/Sidebar';
 import StatsPanel from '@/components/StatsPanel';
@@ -23,13 +24,15 @@ const Globe = dynamic(() => import('@/components/Globe'), {
   ),
 });
 
+const WIND_FLUCTUATION_RANGE = 4; // ±2 knots per tick
+
 export default function Home() {
   const { visibility, toggleLayer } = useLayerVisibility();
   const { currentMode, setCurrentMode, filter } = useVisualMode();
+  const { ships, lastUpdated } = useShipData();
   const [selectedShip, setSelectedShip] = useState<Ship | null>(null);
   const [cameraTarget, setCameraTarget] = useState<{ lat: number; lon: number; height: number } | null>(null);
 
-  const [ships, setShips] = useState<Ship[]>([]);
   const [cables, setCables] = useState<SubmarineCable[]>([]);
   const [piracyZones, setPiracyZones] = useState<PiracyZone[]>([]);
   const [protectedAreas, setProtectedAreas] = useState<ProtectedArea[]>([]);
@@ -38,14 +41,12 @@ export default function Home() {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/ships').then(r => r.json()),
       fetch('/api/cables').then(r => r.json()),
       fetch('/api/piracy').then(r => r.json()),
       fetch('/api/fishing').then(r => r.json()),
       fetch('/api/ocean').then(r => r.json()),
       fetch('/api/weather').then(r => r.json()),
-    ]).then(([shipsData, cablesData, piracyData, fishingData, oceanData, weatherData]) => {
-      setShips(shipsData);
+    ]).then(([cablesData, piracyData, fishingData, oceanData, weatherData]) => {
       setCables(cablesData);
       setPiracyZones(piracyData);
       setProtectedAreas(fishingData);
@@ -53,6 +54,21 @@ export default function Home() {
       setWeatherBuoys(weatherData);
     }).catch(console.error);
   }, []);
+
+  // Simulate live weather buoy fluctuations (±2 knots every 5 seconds).
+  // weatherBuoys.length is used instead of weatherBuoys so the interval is only
+  // restarted when buoys are added/removed, not on every value fluctuation.
+  // The functional updater form (prev => ...) safely reads the latest state.
+  useEffect(() => {
+    if (weatherBuoys.length === 0) return;
+    const interval = setInterval(() => {
+      setWeatherBuoys(prev => prev.map(buoy => ({
+        ...buoy,
+        wind_speed_knots: Math.max(0, buoy.wind_speed_knots + (Math.random() - 0.5) * WIND_FLUCTUATION_RANGE),
+      })));
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [weatherBuoys.length]);
 
   const totalDarkVessels = protectedAreas.reduce(
     (sum, area) => sum + area.dark_vessels.length, 0
@@ -100,6 +116,7 @@ export default function Home() {
         alertCount={piracyZones.filter(z => z.risk_level === 'high').length}
         cablesTracked={cables.length}
         darkVessels={totalDarkVessels}
+        lastUpdated={lastUpdated}
       />
 
       <ShipInfoPanel ship={selectedShip} onClose={() => setSelectedShip(null)} />
