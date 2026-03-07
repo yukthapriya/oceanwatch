@@ -1,34 +1,92 @@
 'use client';
 
+import { useState, useEffect, useRef } from 'react';
+
 interface StatsPanelProps {
   vesselCount: number;
   alertCount: number;
   cablesTracked: number;
   darkVessels: number;
+  lastUpdated?: Date | null;
 }
 
-export default function StatsPanel({ vesselCount, alertCount, cablesTracked, darkVessels }: StatsPanelProps) {
+function useCountUp(target: number) {
+  const [display, setDisplay] = useState(target);
+  const prevRef = useRef(target);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (prevRef.current === target) return;
+    const start = prevRef.current;
+    const diff = target - start;
+    const duration = 400;
+    const startTime = performance.now();
+
+    const animate = (now: number) => {
+      const elapsed = now - startTime;
+      if (elapsed >= duration) {
+        setDisplay(target);
+        prevRef.current = target;
+        rafRef.current = null;
+        return;
+      }
+      setDisplay(Math.round(start + diff * (elapsed / duration)));
+      rafRef.current = requestAnimationFrame(animate);
+    };
+    rafRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [target]);
+
+  return display;
+}
+
+export default function StatsPanel({ vesselCount, alertCount, cablesTracked, darkVessels, lastUpdated }: StatsPanelProps) {
+  const [secondsAgo, setSecondsAgo] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!lastUpdated) return;
+    const update = () =>
+      setSecondsAgo(Math.floor((Date.now() - lastUpdated.getTime()) / 1000));
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [lastUpdated]);
+
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40">
-      <div className="glass rounded-xl px-6 py-3 flex items-center gap-6 border border-cyan-500/20">
-        <StatItem value={vesselCount} label="Vessels Tracked" color="text-cyan-400" icon="🚢" />
-        <div className="w-px h-8 bg-slate-600" />
-        <StatItem value={alertCount} label="Piracy Alerts" color="text-red-400" icon="⚠️" />
-        <div className="w-px h-8 bg-slate-600" />
-        <StatItem value={cablesTracked} label="Cables Online" color="text-purple-400" icon="🔌" />
-        <div className="w-px h-8 bg-slate-600" />
-        <StatItem value={darkVessels} label="Dark Vessels" color="text-orange-400" icon="👁️" />
+      <div className="glass rounded-xl px-6 py-3 flex flex-col items-center gap-2 border border-cyan-500/20">
+        <div className="flex items-center gap-6">
+          <StatItem value={vesselCount} label="Vessels Tracked" color="text-cyan-400" icon="🚢" />
+          <div className="w-px h-8 bg-slate-600" />
+          <StatItem value={alertCount} label="Piracy Alerts" color="text-red-400" icon="⚠️" />
+          <div className="w-px h-8 bg-slate-600" />
+          <StatItem value={cablesTracked} label="Cables Online" color="text-purple-400" icon="🔌" />
+          <div className="w-px h-8 bg-slate-600" />
+          <StatItem value={darkVessels} label="Dark Vessels" color="text-orange-400" icon="👁️" />
+        </div>
+        {secondsAgo !== null && (
+          <div className="text-xs text-slate-500">
+            Updated {secondsAgo}s ago
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 function StatItem({ value, label, color, icon }: { value: number; label: string; color: string; icon: string }) {
+  const display = useCountUp(value);
   return (
     <div className="text-center">
       <div className={`text-xl font-bold ${color} flex items-center gap-1`}>
         <span>{icon}</span>
-        <span>{value}</span>
+        <span>{display}</span>
       </div>
       <div className="text-xs text-slate-400">{label}</div>
     </div>
